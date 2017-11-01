@@ -32,6 +32,7 @@
 
 /* Consistent across all pool instances */
 static const char *workpadding = "000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000";
+static const char *cuckooNoncesZeros = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 static const char *scriptsig_header = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff";
 static uchar scriptsig_header_bin[41];
 static const double nonces = 4294967296;
@@ -163,7 +164,7 @@ struct worker_instance {
 	time_t start_time;
 
 	double best_diff; /* Best share found by this worker */
-	int mindiff; /* User chosen mindiff */
+	double mindiff; /* User chosen mindiff */
 
 	bool idle;
 	bool notified_idle;
@@ -197,8 +198,8 @@ struct stratum_instance {
 	uint64_t enonce1_64;
 	int session_id;
 
-	int64_t diff; /* Current diff */
-	int64_t old_diff; /* Previous diff */
+	double diff; /* Current diff */
+	double old_diff; /* Previous diff */
 	int64_t diff_change_job_id; /* Last job_id we changed diff */
 	double dsps1; /* Diff shares per second, 1 minute rolling average */
 	double dsps5; /* ... 5 minute ... */
@@ -523,7 +524,7 @@ static void generate_coinbase(const ckpool_t *ckp, workbase_t *wb)
 {
 	uint64_t *u64, g64, d64 = 0;
 	sdata_t *sdata = ckp->sdata;
-	char header[228];
+	char header[564];
 	int len, ofs = 0;
 	ts_t now;
 
@@ -636,14 +637,15 @@ static void generate_coinbase(const ckpool_t *ckp, workbase_t *wb)
 	LOGDEBUG("Coinb2: %s", wb->coinb2);
 	/* Coinbase 2 complete */
 
-	snprintf(header, 225, "%s%s%s%s%s%s%s",
+	snprintf(header, 561, "%s%s%s%s%s%s%s%s",
 		 wb->bbversion, wb->prevhash,
 		 "0000000000000000000000000000000000000000000000000000000000000000",
 		 wb->ntime, wb->nbit,
 		 "00000000", /* nonce */
+		 cuckooNoncesZeros,
 		 workpadding);
 	LOGDEBUG("Header: %s", header);
-	hex2bin(wb->headerbin, header, 112);
+	hex2bin(wb->headerbin, header, 280);
 }
 
 static void stratum_broadcast_update(sdata_t *sdata, const workbase_t *wb, bool clean);
@@ -1820,7 +1822,7 @@ static void add_node_base(ckpool_t *ckp, json_t *val, bool trusted, int64_t clie
 	workbase_t *wb = ckzalloc(sizeof(workbase_t));
 	sdata_t *sdata = ckp->sdata;
 	bool new_block = false;
-	char header[228];
+	char header[564];
 
 	wb->ckp = ckp;
 	/* This is the client id if this workbase came from a remote trusted
@@ -1869,14 +1871,15 @@ static void add_node_base(ckpool_t *ckp, json_t *val, bool trusted, int64_t clie
 	json_intcpy(&wb->enonce2varlen, val, "enonce2varlen");
 	ts_realtime(&wb->gentime);
 
-	snprintf(header, 225, "%s%s%s%s%s%s%s",
+	snprintf(header, 561, "%s%s%s%s%s%s%s%s",
 		 wb->bbversion, wb->prevhash,
 		 "0000000000000000000000000000000000000000000000000000000000000000",
 		 wb->ntime, wb->nbit,
 		 "00000000", /* nonce */
+		 cuckooNoncesZeros,
 		 workpadding);
 	LOGDEBUG("Header: %s", header);
-	hex2bin(wb->headerbin, header, 112);
+	hex2bin(wb->headerbin, header, 280);
 
 	/* If this is from a remote trusted server or an upstream server, add
 	 * it to the remote_workbases hashtable */
@@ -1892,12 +1895,12 @@ static void add_node_base(ckpool_t *ckp, json_t *val, bool trusted, int64_t clie
 /* Calculate share diff and fill in hash and swap. Need to hold workbase read count */
 static double
 share_diff(char *coinbase, const uchar *enonce1bin, const workbase_t *wb, const char *nonce2,
-	   const uint32_t ntime32, const char *nonce, uchar *hash, uchar *swap, int *cblen)
+	   const uint32_t ntime32, const char *nonce, const char *cuckooNonces[42], uchar *hash, uchar *swap, int *cblen)
 {
 	unsigned char merkle_root[32], merkle_sha[64];
 	uint32_t *data32, *swap32, benonce32;
 	uchar hash1[32];
-	char data[80];
+	char data[248];
 	int i;
 
 	memcpy(coinbase, wb->coinb1bin, wb->coinb1len);
@@ -1921,14 +1924,20 @@ share_diff(char *coinbase, const uchar *enonce1bin, const workbase_t *wb, const 
 	flip_32(swap32, data32);
 
 	/* Copy the cached header binary and insert the merkle root */
-	memcpy(data, wb->headerbin, 80);
+	memcpy(data, wb->headerbin, 248);
 	memcpy(data + 36, merkle_root, 32);
 
 	/* Insert the nonce value into the data */
 	hex2bin(&benonce32, nonce, 4);
 	data32 = (uint32_t *)(data + 64 + 12);
-	*data32 = benonce32;
+	*data32 = htobe32(benonce32);
 
+	for (int i=0;i<42;i++) {
+		hex2bin(&benonce32, cuckooNonces[i], 4);
+		data32 = (uint32_t *)(data + 80 + (4*i));
+		*data32 = htobe32(benonce32);
+	}
+	
 	/* Insert the ntime value into the data */
 	data32 = (uint32_t *)(data + 68);
 	*data32 = htobe32(ntime32);
@@ -1936,12 +1945,13 @@ share_diff(char *coinbase, const uchar *enonce1bin, const workbase_t *wb, const 
 	/* Hash the share */
 	data32 = (uint32_t *)data;
 	swap32 = (uint32_t *)swap;
-	flip_80(swap32, data32);
-	sha256(swap, 80, hash1);
+	flip_248(swap32, data32);
+	sha256(swap + 80, 168, hash1);
 	sha256(hash1, 32, hash);
 
 	/* Calculate the diff of the share here */
-	return diff_from_target(hash);
+	double diffCalced = diff_from_target(hash);
+	return diffCalced;
 }
 
 static void add_remote_blockdata(ckpool_t *ckp, json_t *val, const int cblen, const char *coinbase,
@@ -2002,21 +2012,28 @@ static void send_nodes_block(sdata_t *sdata, const json_t *block_val, const int6
 
 /* Entered with workbase readcount. */
 static void send_node_block(ckpool_t *ckp, sdata_t *sdata, const char *enonce1, const char *nonce,
-			    const char *nonce2, const uint32_t ntime32, const int64_t jobid,
+			    const char *nonce2, const char* cuckooNonces[42], const uint32_t ntime32, const int64_t jobid,
 			    const double diff, const int64_t client_id,
 			    const char *coinbase, const int cblen, const uchar *data)
 {
 	if (sdata->node_instances) {
 		json_t *val = json_object();
+		json_t *cuckooNoncesArr = json_array();
 
+		for (int i=0; i<42; i++) {
+			json_array_append(cuckooNoncesArr, json_string(cuckooNonces[i]));
+		}
+		
 		json_set_string(val, "enonce1", enonce1);
 		json_set_string(val, "nonce", nonce);
 		json_set_string(val, "nonce2", nonce2);
 		json_set_uint32(val, "ntime32", ntime32);
+		json_object_set_new(val, "cuckooNonces", cuckooNoncesArr);
 		json_set_int64(val, "jobid", jobid);
 		json_set_double(val, "diff", diff);
 		add_remote_blockdata(ckp, val, cblen, coinbase, data);
 		send_nodes_block(sdata, val, client_id);
+		json_decref(cuckooNoncesArr);
 		json_decref(val);
 	}
 }
@@ -2036,7 +2053,7 @@ process_block(const workbase_t *wb, const char *coinbase, const int cblen,
 
 	/* Message format: "data" */
 	gbt_block = ckzalloc(1024);
-	__bin2hex(gbt_block, data, 80);
+	__bin2hex(gbt_block, data, 248);
 	if (txns < 0xfd) {
 		uint8_t val8 = txns;
 
@@ -2191,8 +2208,8 @@ static void submit_node_block(ckpool_t *ckp, sdata_t *sdata, json_t *val)
 	json_get_int(&cblen, val, "cblen");
 	json_get_string(&swaphex, val, "swaphex");
 	if (coinbasehex && cblen && swaphex) {
-		uchar hash1[32];
-
+		uchar hash1[32];  
+  
 		coinbase = alloca(cblen);
 		hex2bin(coinbase, coinbasehex, cblen);
 		hex2bin(swap, swaphex, 80);
@@ -2206,7 +2223,7 @@ static void submit_node_block(ckpool_t *ckp, sdata_t *sdata, json_t *val)
 		hex2bin(enonce1bin, enonce1, enonce1len);
 		coinbase = alloca(wb->coinb1len + wb->enonce1constlen + wb->enonce1varlen + wb->enonce2varlen + wb->coinb2len);
 		/* Fill in the hashes */
-		share_diff(coinbase, enonce1bin, wb, nonce2, ntime32, nonce, hash, swap, &cblen);
+		share_diff(coinbase, enonce1bin, wb, nonce2, ntime32, nonce, NULL, hash, swap, &cblen);
 	}
 
 	/* Now we have enough to assemble a block */
@@ -2967,7 +2984,7 @@ static void update_notify(ckpool_t *ckp, const char *cmd)
 	sdata_t *sdata = ckp->sdata, *dsdata;
 	bool new_block = false, clean;
 	int i, id = 0, subid = 0;
-	char header[228];
+	char header[564];
 	const char *buf;
 	proxy_t *proxy;
 	workbase_t *wb;
@@ -3022,14 +3039,15 @@ static void update_notify(ckpool_t *ckp, const char *cmd)
 	sscanf(wb->ntime, "%x", &wb->ntime32);
 	clean = json_is_true(json_object_get(val, "clean"));
 	ts_realtime(&wb->gentime);
-	snprintf(header, 225, "%s%s%s%s%s%s%s",
+	snprintf(header, 561, "%s%s%s%s%s%s%s%s",
 		 wb->bbversion, wb->prevhash,
 		 "0000000000000000000000000000000000000000000000000000000000000000",
 		 wb->ntime, wb->nbit,
 		 "00000000", /* nonce */
+		 cuckooNoncesZeros,
 		 workpadding);
 	LOGDEBUG("Header: %s", header);
-	hex2bin(wb->headerbin, header, 112);
+	hex2bin(wb->headerbin, header, 280);
 	wb->txn_hashes = ckzalloc(1);
 
 	dsdata = proxy->sdata;
@@ -5343,7 +5361,7 @@ static user_instance_t *generate_user(ckpool_t *ckp, stratum_instance_t *client,
 	return user;
 }
 
-static void set_worker_mindiff(ckpool_t *ckp, const char *workername, int mindiff)
+static void set_worker_mindiff(ckpool_t *ckp, const char *workername, double mindiff)
 {
 	stratum_instance_t *client;
 	sdata_t *sdata = ckp->sdata;
@@ -5356,12 +5374,8 @@ static void set_worker_mindiff(ckpool_t *ckp, const char *workername, int mindif
 	/* Then find the matching worker user */
 	worker = get_worker(sdata, user, workername);
 
-	if (mindiff < 1) {
-		if (likely(!mindiff)) {
-			worker->mindiff = 0;
-			return;
-		}
-		LOGINFO("Worker %s requested invalid diff %d", worker->workername, mindiff);
+	if (likely(!mindiff)) {
+		worker->mindiff = 0;
 		return;
 	}
 	if (mindiff < ckp->mindiff)
@@ -5701,7 +5715,7 @@ static void stratum_send_diff(sdata_t *sdata, const stratum_instance_t *client)
 {
 	json_t *json_msg;
 
-	JSON_CPACK(json_msg, "{s[I]soss}", "params", client->diff, "id", json_null(),
+	JSON_CPACK(json_msg, "{s[f]soss}", "params", client->diff, "id", json_null(),
 			     "method", "mining.set_difficulty");
 	stratum_add_send(sdata, json_msg, client->id, SM_DIFF);
 }
@@ -5735,9 +5749,9 @@ static void add_submit(ckpool_t *ckp, stratum_instance_t *client, const double d
 {
 	sdata_t *ckp_sdata = ckp->sdata, *sdata = client->sdata;
 	worker_instance_t *worker = client->worker_instance;
-	double tdiff, bdiff, dsps, drr, network_diff, bias;
+	double tdiff, bdiff, dsps, drr, network_diff, bias, optimal, mindiff;
 	user_instance_t *user = client->user_instance;
-	int64_t next_blockid, optimal, mindiff;
+	int64_t next_blockid;
 	tv_t now_t;
 
 	mutex_lock(&ckp_sdata->uastats_lock);
@@ -5818,9 +5832,9 @@ static void add_submit(ckpool_t *ckp, stratum_instance_t *client, const double d
 	if (mindiff) {
 		if (drr < 0.5)
 			return;
-		optimal = lround(dsps * 2.4);
+		optimal = dsps * 2.4;
 	} else
-		optimal = lround(dsps * 3.33);
+		optimal = dsps * 3.33;
 
 	/* Clamp to mindiff ~ network_diff */
 
@@ -5850,7 +5864,7 @@ static void add_submit(ckpool_t *ckp, stratum_instance_t *client, const double d
 
 	client->ssdc = 0;
 
-	LOGINFO("Client %s biased dsps %.2f dsps %.2f drr %.2f adjust diff from %"PRId64" to: %"PRId64" ",
+	LOGINFO("Client %s biased dsps %.2f dsps %.2f drr %.2f adjust diff from %.2f to: %.2f ",
 		client->identity, dsps, client->dsps5, drr, client->diff, optimal);
 
 	copy_tv(&client->ldc, &now_t);
@@ -5879,17 +5893,18 @@ downstream_block(ckpool_t *ckp, sdata_t *sdata, const json_t *val, const int cbl
 static void
 test_blocksolve(const stratum_instance_t *client, const workbase_t *wb, const uchar *data,
 		const uchar *hash, const double diff, const char *coinbase, int cblen,
-		const char *nonce2, const char *nonce, const uint32_t ntime32, const bool stale)
+		const char *nonce2, const char *nonce, const char* cuckooNonces[42], const uint32_t ntime32, const bool stale)
 {
 	char blockhash[68], cdfield[64], *gbt_block;
 	sdata_t *sdata = client->sdata;
-	json_t *val = NULL, *val_copy;
+	json_t *val = NULL, *cuckooNoncesArr = NULL, *val_copy;
 	ckpool_t *ckp = wb->ckp;
 	uchar flip32[32];
 	ts_t ts_now;
 	bool ret;
 
 	/* Submit anything over 99.9% of the diff in case of rounding errors */
+	//printf("diff: %f, network diff: %f\n", diff, sdata->current_workbase->network_diff);
 	if (diff < sdata->current_workbase->network_diff * 0.999)
 		return;
 
@@ -5902,10 +5917,15 @@ test_blocksolve(const stratum_instance_t *client, const workbase_t *wb, const uc
 	sprintf(cdfield, "%lu,%lu", ts_now.tv_sec, ts_now.tv_nsec);
 
 	gbt_block = process_block(wb, coinbase, cblen, data, hash, flip32, blockhash);
-	send_node_block(ckp, sdata, client->enonce1, nonce, nonce2, ntime32, wb->id,
+	send_node_block(ckp, sdata, client->enonce1, nonce, nonce2, cuckooNonces, ntime32, wb->id,
 			diff, client->id, coinbase, cblen, data);
 
 	val = json_object();
+	cuckooNoncesArr = json_array();
+
+	for (int i=0; i<42; i++) {
+		json_array_append(cuckooNoncesArr, json_string(cuckooNonces[i]));
+	}
 	json_set_int(val, "height", wb->height);
 	json_set_string(val,"blockhash", blockhash);
 	json_set_string(val,"confirmed", "n");
@@ -5919,6 +5939,7 @@ test_blocksolve(const stratum_instance_t *client, const workbase_t *wb, const uc
 	json_set_string(val, "enonce1", client->enonce1);
 	json_set_string(val, "nonce2", nonce2);
 	json_set_string(val, "nonce", nonce);
+	json_object_set_new(val, "cuckooNonces", cuckooNoncesArr);
 	json_set_uint32(val, "ntime32", ntime32);
 	json_set_int64(val, "reward", wb->coinbasevalue);
 	json_set_double(val, "diff", diff);
@@ -5949,20 +5970,20 @@ test_blocksolve(const stratum_instance_t *client, const workbase_t *wb, const uc
 
 /* Needs to be entered with workbase readcount and client holding a ref count. */
 static double submission_diff(const stratum_instance_t *client, const workbase_t *wb, const char *nonce2,
-			      const uint32_t ntime32, const char *nonce, uchar *hash, const bool stale)
+			      const uint32_t ntime32, const char *nonce, const char *cuckooNonces[42], uchar *hash, const bool stale)
 {
 	char *coinbase;
-	uchar swap[80];
+	uchar swap[248];
 	double ret;
 	int cblen;
 
 	coinbase = ckalloc(wb->coinb1len + wb->enonce1constlen + wb->enonce1varlen + wb->enonce2varlen + wb->coinb2len);
 
 	/* Calculate the diff of the share here */
-	ret = share_diff(coinbase, client->enonce1bin, wb, nonce2, ntime32, nonce, hash, swap, &cblen);
+	ret = share_diff(coinbase, client->enonce1bin, wb, nonce2, ntime32, nonce, cuckooNonces, hash, swap, &cblen);
 
 	/* Test we haven't solved a block regardless of share status */
-	test_blocksolve(client, wb, swap, hash, ret, coinbase, cblen, nonce2, nonce, ntime32, stale);
+	test_blocksolve(client, wb, swap, hash, ret, coinbase, cblen, nonce2, nonce, cuckooNonces, ntime32, stale);
 
 	free(coinbase);
 
@@ -6042,6 +6063,7 @@ static json_t *parse_submit(stratum_instance_t *client, json_t *json_msg,
 	const char *workername, *job_id, *ntime, *nonce;
 	user_instance_t *user = client->user_instance;
 	char *fname = NULL, *s, *nonce2;
+	const char *cuckooNonces[42];
 	sdata_t *sdata = client->sdata;
 	enum share_err err = SE_NONE;
 	ckpool_t *ckp = client->ckp;
@@ -6051,7 +6073,7 @@ static json_t *parse_submit(stratum_instance_t *client, json_t *json_msg,
 	uchar hash[32];
 	int nlen, len;
 	time_t now_t;
-	json_t *val;
+	json_t *val, *cuckooNoncesVal;
 	int64_t id;
 	ts_t now;
 	FILE *fp;
@@ -6100,6 +6122,20 @@ static json_t *parse_submit(stratum_instance_t *client, json_t *json_msg,
 		*err_val = JSON_ERR(err);
 		goto out;
 	}
+	cuckooNoncesVal = json_array_get(params_val, 5);
+	if (unlikely(!cuckooNoncesVal || !json_is_array(cuckooNoncesVal))) {
+		err = SE_NO_CUCKOOPROFF;
+		*err_val = JSON_ERR(err);
+		goto out;
+	}
+	for (int i=0;i<42;i++) {
+		cuckooNonces[i] = json_string_value(json_array_get(cuckooNoncesVal, i));
+		if (unlikely(!cuckooNonces[i] || !strlen(cuckooNonces[i]) || !validhex(cuckooNonces[i]))) {
+			err = SE_INVALID_CUCKOOPROOF;
+			*err_val = JSON_ERR(err);
+			goto out;
+		}
+	}
 	if (safecmp(workername, client->workername)) {
 		err = SE_WORKER_MISMATCH;
 		*err_val = JSON_ERR(err);
@@ -6141,7 +6177,7 @@ static json_t *parse_submit(stratum_instance_t *client, json_t *json_msg,
 	}
 	if (id < sdata->blockchange_id)
 		stale = true;
-	sdiff = submission_diff(client, wb, nonce2, ntime32, nonce, hash, stale);
+	sdiff = submission_diff(client, wb, nonce2, ntime32, nonce, cuckooNonces, hash, stale);
 	if (sdiff > client->best_diff) {
 		worker_instance_t *worker = client->worker_instance;
 
@@ -6202,13 +6238,13 @@ out_nowb:
 			} else {
 				err = SE_DUPE;
 				json_set_string(json_msg, "reject-reason", SHARE_ERR(err));
-				LOGINFO("Rejected client %s dupe diff %.1f/%.0f/%s: %s",
+				LOGINFO("Rejected client %s dupe diff %.10f/%.10f/%s: %s",
 					client->identity, sdiff, diff, wdiffsuffix, hexhash);
 				submit = false;
 			}
 		} else {
 			err = SE_HIGH_DIFF;
-			LOGINFO("Rejected client %s high diff %.1f/%.0f/%s: %s",
+			LOGINFO("Rejected client %s high diff %.10f/%.10f/%s: %s",
 				client->identity, sdiff, diff, wdiffsuffix, hexhash);
 			json_set_string(json_msg, "reject-reason", SHARE_ERR(err));
 			submit = false;

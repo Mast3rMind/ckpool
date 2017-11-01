@@ -1601,7 +1601,7 @@ bool _hex2bin(void *vp, const void *vhexstr, size_t len, const char *file, const
 	if (likely(len == 0 && *hexstr == 0))
 		ret = true;
 	if (!ret)
-		LOGWARNING("Failed hex2bin decode from %s %s:%d", file, func, line);
+		LOGWARNING("Failed hex2bin decode from %s %s:%d --- %d, %s", file, func, line, len, hexstr);
 	return ret;
 }
 
@@ -2086,19 +2086,26 @@ double diff_from_target(uchar *target)
  * as a double. */
 double diff_from_nbits(char *nbits)
 {
-	double numerator;
-	uint32_t diff32;
-	uint8_t pow;
-	int powdiff;
+	uint32_t diff32, nbitsInt;
 
-	pow = nbits[0];
-	powdiff = (8 * (0x1d - 3)) - (8 * (pow - 3));
-	if (powdiff < 8) // testnet only
-		powdiff = 8;
-	diff32 = be32toh(*((uint32_t *)nbits)) & 0x00FFFFFF;
-	numerator = 0xFFFFULL << powdiff;
+	nbitsInt = be32toh(*((uint32_t *)nbits));
+	int nShift = (nbitsInt >> 24) & 0xff;
 
-	return numerator / (double)diff32;
+double dDiff =
+(double)0x0000ffff / (double)(nbitsInt & 0x00ffffff);
+
+while (nShift < 29)
+{
+dDiff *= 256.0;
+nShift++;
+}
+while (nShift > 29)
+{
+dDiff /= 256.0;
+nShift--;
+}
+
+return dDiff;
 }
 
 void target_from_diff(uchar *target, double diff)
