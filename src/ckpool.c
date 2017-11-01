@@ -1483,9 +1483,9 @@ static void parse_config(ckpool_t *ckp)
 	arr_val = json_object_get(json_conf, "trusted");
 	parse_trusted(ckp, arr_val);
 	json_get_string(&ckp->upstream, json_conf, "upstream");
-	json_get_int64(&ckp->mindiff, json_conf, "mindiff");
-	json_get_int64(&ckp->startdiff, json_conf, "startdiff");
-	json_get_int64(&ckp->maxdiff, json_conf, "maxdiff");
+	json_get_double(&ckp->mindiff, json_conf, "mindiff");
+	json_get_double(&ckp->startdiff, json_conf, "startdiff");
+	json_get_double(&ckp->maxdiff, json_conf, "maxdiff");
 	json_get_string(&ckp->logdir, json_conf, "logdir");
 	json_get_int(&ckp->maxclients, json_conf, "maxclients");
 	arr_val = json_object_get(json_conf, "proxy");

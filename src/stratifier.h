@@ -74,7 +74,7 @@ struct genwork {
 	int coinb2len; // length of above
 
 	/* Cached header binary */
-	char headerbin[112];
+	char headerbin[280];
 
 	char *logdir;
 

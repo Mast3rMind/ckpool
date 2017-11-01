@@ -145,6 +145,15 @@ static inline void flip_80(void *dest_p, const void *src_p)
 		dest[i] = bswap_32(src[i]);
 }
 
+static inline void flip_248(void *dest_p, const void *src_p) {
+		uint32_t *dest = dest_p;
+	const uint32_t *src = src_p;
+	int i;
+
+	for (i = 0; i < 62; i++)
+		dest[i] = bswap_32(src[i]);
+}
+
 #define cond_wait(_cond, _lock) _cond_wait(_cond, _lock, __FILE__, __func__, __LINE__)
 #define cond_timedwait(_cond, _lock, _abstime) _cond_timedwait(_cond, _lock, _abstime, __FILE__, __func__, __LINE__)
 #define mutex_timedlock(_lock, _timeout) _mutex_timedlock(_lock, _timeout, __FILE__, __func__, __LINE__)
@@ -267,7 +276,9 @@ enum share_err {
 	SE_STALE,
 	SE_NTIME_INVALID,
 	SE_DUPE,
-	SE_HIGH_DIFF
+	SE_HIGH_DIFF,
+	SE_NO_CUCKOOPROFF,
+	SE_INVALID_CUCKOOPROOF
 };
 
 static const char __maybe_unused *share_errs[] = {
